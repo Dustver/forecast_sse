@@ -238,7 +238,8 @@ def forecast_ets_seasonality(
     values: List[float],
     timeline: List[float] = None,
     data_completion: int = DataCompletion.INTERPOLATE,
-    aggregation: int = Aggregation.AVERAGE
+    aggregation: int = Aggregation.AVERAGE,
+    use_statsmodels: bool = False
 ) -> int:
     """
     Excel-compatible FORECAST.ETS.SEASONALITY function.
