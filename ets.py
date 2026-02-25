@@ -119,75 +119,79 @@ def _detect_seasonality_autocorrelation(values: np.ndarray, max_period: int = No
     if max_period < 2:
         return 1
     
-    # ==========================================
-    # Шаг 1: Detrending (линейный тренд)
-    # ==========================================
+    # Detrending
     x = np.arange(n)
     coeffs = np.polyfit(x, values, 1)
     trend = np.polyval(coeffs, x)
     detrended = values - trend
     
-    # ==========================================
-    # Шаг 2: Нормализация
-    # ==========================================
+    # Normalize
     std = np.std(detrended)
     if std < 1e-10:
         return 1
     detrended = (detrended - np.mean(detrended)) / std
     
-    # ==========================================
-    # Шаг 3: Расчёт автокорреляции
-    # ==========================================
+    # Autocorrelation
     autocorr = np.zeros(max_period + 1)
-    
     for lag in range(1, max_period + 1):
         if n - lag > 0:
             c = np.corrcoef(detrended[:-lag], detrended[lag:])[0, 1]
             if not np.isnan(c):
                 autocorr[lag] = c
     
-    # ==========================================
-    # Шаг 4: Поиск пиков автокорреляции
-    # ==========================================
-    peaks = []
+    # Preferred periods
+    preferred_periods = {2, 3, 4, 6, 8, 12, 24}
     
-    for i in range(2, max_period):
-        if autocorr[i] > autocorr[i-1] and autocorr[i] > autocorr[i+1]:
-            if autocorr[i] > 0.05:
-                peaks.append((i, autocorr[i]))
+    candidates = []
     
-    # ==========================================
-    # Шаг 5: Выбор периода (Excel логика)
-    # ==========================================
+    for period in range(2, max_period + 1):
+        if n < period * 2:
+            continue
+        
+        corr = autocorr[period]
+        
+        if corr < 0.05:
+            continue
+        
+        score = corr
+        
+        # Бонусы
+        if n % period == 0:
+            score *= 3.0
+        if period in preferred_periods:
+            score *= 1.5
+        cycles = n / period
+        if cycles >= 3:
+            score *= 1.2
+        
+        # ★★★ Штраф за большие периоды (ключевое изменение!)
+        score *= (1.0 / np.log(period + 1))
+        
+        candidates.append((period, score, corr))
     
-    if not peaks:
-        # Fallback: период с максимальной автокорреляцией
-        max_idx = np.argmax(autocorr[1:]) + 1
-        if autocorr[max_idx] > 0.1:
-            return max_idx
+    if not candidates:
         return 1
     
-    # Сортируем по периоду (ВОЗРАСТАНИЕ) - Excel предпочитает меньшие периоды
-    peaks.sort(key=lambda x: x[0])
+    # Сортировка по score
+    candidates.sort(key=lambda x: x[1], reverse=True)
     
-    # Проверяем каждый пик начиная с наименьшего
-    for period, corr in peaks:
-        # Требуем минимум 2 полных цикла
-        if n >= period * 2:
-            # Проверяем не является ли гармоникой меньшего периода
-            is_harmonic = False
-            for smaller_period, smaller_corr in peaks:
-                if smaller_period < period and period % smaller_period == 0:
-                    if smaller_corr >= 0.5 * corr:
-                        is_harmonic = True
-                        break
-            
-            if not is_harmonic:
-                logger.info(f"Seasonality detected: {period} (corr={corr:.3f})")
-                return period
+    best_period = candidates[0][0]
+    best_score = candidates[0][1]
+    best_corr = candidates[0][2]
     
-    # Fallback: наименьший период
-    return peaks[0][0]
+    # Проверка на меньшие периоды которые делят n
+    for period, score, corr in candidates:
+        if period < best_period and n % period == 0:
+            if corr > 0.4 * best_corr:
+                best_period = period
+                best_corr = corr
+                break
+    
+    if best_corr < 0.1:
+        return 1
+    
+    logger.info(f"Seasonality detected: {best_period} (score={best_score:.3f}, corr={best_corr:.3f})")
+    return best_period
 
 
 def _detect_seasonality_statsmodels(values: np.ndarray) -> int:
