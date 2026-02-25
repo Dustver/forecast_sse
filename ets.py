@@ -105,11 +105,6 @@ def _detect_seasonality_autocorrelation(values: np.ndarray, max_period: int = No
     """
     Detect seasonality period using autocorrelation analysis.
     Matches Excel's FORECAST.ETS.SEASONALITY algorithm.
-    
-    Excel behavior:
-    - Tests periods 2 through n/2
-    - Prefers SMALLER periods with significant correlation
-    - Requires at least 2 complete cycles
     """
     n = len(values)
     
@@ -152,14 +147,13 @@ def _detect_seasonality_autocorrelation(values: np.ndarray, max_period: int = No
                 autocorr[lag] = c
     
     # ==========================================
-    # Шаг 4: Поиск пиков (локальные максимумы)
+    # Шаг 4: Поиск пиков автокорреляции
     # ==========================================
     peaks = []
     
     for i in range(2, max_period):
-        # Пик: больше обоих соседей
         if autocorr[i] > autocorr[i-1] and autocorr[i] > autocorr[i+1]:
-            if autocorr[i] > 0.05:  # Минимальный порог
+            if autocorr[i] > 0.05:
                 peaks.append((i, autocorr[i]))
     
     # ==========================================
@@ -184,7 +178,6 @@ def _detect_seasonality_autocorrelation(values: np.ndarray, max_period: int = No
             is_harmonic = False
             for smaller_period, smaller_corr in peaks:
                 if smaller_period < period and period % smaller_period == 0:
-                    # Если меньший период имеет сравнимую корреляцию - это гармоника
                     if smaller_corr >= 0.5 * corr:
                         is_harmonic = True
                         break
@@ -195,7 +188,6 @@ def _detect_seasonality_autocorrelation(values: np.ndarray, max_period: int = No
     
     # Fallback: наименьший период
     return peaks[0][0]
-
 
 
 def _detect_seasonality_statsmodels(values: np.ndarray) -> int:
