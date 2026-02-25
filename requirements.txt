@@ -1,0 +1,5 @@
+grpcio>=1.60
+protobuf>=4.21
+numpy>=1.26
+# Optional (improves CONFINT z-score calculation); code has fallback if missing.
+scipy>=1.11

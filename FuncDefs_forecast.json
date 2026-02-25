@@ -1,0 +1,100 @@
+{
+  "Functions": [
+    {
+      "Id": 0,
+      "Name": "PING",
+      "Description": "Simple connectivity test function. Returns the input value unchanged.",
+      "Type": 0,
+      "ReturnType": 1,
+      "Params": {
+        "1_value": 1
+      }
+    },
+    {
+      "Id": 1,
+      "Name": "FORECAST_ETS",
+      "Description": "Excel-compatible FORECAST.ETS function. Calculates a future value based on existing (historical) values using Exponential Triple Smoothing (ETS) algorithm. This function uses the AAA version of ETS (Additive Error, Additive Trend, Additive Seasonality). Returns a single forecasted value for the next period. Equivalent to Excel: =FORECAST.ETS(target_date, values, timeline, [seasonality], [data_completion], [aggregation])",
+      "Type": 1,
+      "ReturnType": 1,
+      "Params": {
+        "1_values": 1,
+        "2_timeline": 1,
+        "3_seasonality": 1,
+        "4_data_completion": 1,
+        "5_aggregation": 1
+      }
+    },
+    {
+      "Id": 2,
+      "Name": "FORECAST_ETS_SEASONALITY",
+      "Description": "Excel-compatible FORECAST.ETS.SEASONALITY function. Returns the length of the repetitive pattern (seasonal period) that is automatically detected in the specified time series. This is an AGGREGATION function that analyzes ALL input rows and returns a SINGLE numeric value representing the detected seasonality period. Algorithm: Uses autocorrelation analysis on detrended data to detect repeating patterns. The function searches for peaks in the autocorrelation function that indicate periodic behavior. Common return values: 1 = No seasonality detected, 4 = Quarterly pattern, 7 = Weekly pattern (daily data), 12 = Monthly pattern (monthly data), 52 = Weekly pattern (weekly data over years). Parameters: (1) values [REQUIRED] - The historical numeric values of your time series (e.g., sales, quantities, temperatures). Pass as aggregated column. (2) timeline [REQUIRED] - The corresponding time points for each value. Should be numeric (e.g., Qlik date serial numbers, month numbers 1-24, or sequential integers). Must have same count as values. (3) data_completion [OPTIONAL, default=1] - How to handle missing data points in the timeline: 0 = Treat missing points as zero values, 1 = Interpolate missing values using linear interpolation. (4) aggregation [OPTIONAL, default=1] - How to aggregate when multiple values exist for the same timeline point: 1 = AVERAGE, 2 = COUNT, 3 = COUNTA, 4 = MAX, 5 = MEDIAN, 6 = MIN, 7 = SUM. Excel equivalent: =FORECAST.ETS.SEASONALITY(values, timeline, [data_completion], [aggregation]). Minimum data requirement: At least 2 complete seasonal cycles are recommended for reliable detection (e.g., 24 months for monthly seasonality). Returns 1 if insufficient data or no pattern detected.",
+      "Type": 1,
+      "ReturnType": 1,
+      "Params": {
+        "1_values": 1,
+        "2_timeline": 1,
+        "3_data_completion": 1,
+        "4_aggregation": 1
+      }
+    },
+    {
+      "Id": 3,
+      "Name": "FORECAST_ETS_TREND",
+      "Description": "Returns the trend component (slope) of the time series after removing seasonal effects. Positive values indicate upward trend, negative values indicate downward trend, values near zero indicate no significant trend. The magnitude represents the average change per time unit. Excel equivalent: This provides similar information to FORECAST.ETS.STAT with stat_type=5 (slope). Parameters: (1) values [REQUIRED] - Historical values, (2) timeline [REQUIRED] - Time points, (3) seasonality [OPTIONAL, default=0] - Seasonal period (0=auto-detect), (4) data_completion [OPTIONAL], (5) aggregation [OPTIONAL].",
+      "Type": 1,
+      "ReturnType": 1,
+      "Params": {
+        "1_values": 1,
+        "2_timeline": 1,
+        "3_seasonality": 1,
+        "4_data_completion": 1,
+        "5_aggregation": 1
+      }
+    },
+    {
+      "Id": 4,
+      "Name": "FORECAST_ETS_SERIES",
+      "Description": "Excel-compatible forecast function that returns MULTIPLE forecast values as a TABLE. This is a TENSOR function that generates forecasted values for each target timeline point. Use this function when you need to forecast multiple periods ahead (e.g., next 12 months). The function applies Holt-Winters exponential smoothing with automatically detected or specified seasonality. Output: Returns one row per target_timeline value, containing the forecasted value for that period. Parameters: (1) values [REQUIRED] - Historical values to base the forecast on. (2) timeline [REQUIRED] - Timeline points corresponding to historical values (numeric). (3) target_timeline [REQUIRED] - Future timeline points to forecast. Pass the target periods you want predictions for. (4) seasonality [OPTIONAL, default=0] - Seasonal period: 0 = Auto-detect seasonality using FORECAST_ETS_SEASONALITY algorithm, 1 = No seasonality (use Holt's linear method), >1 = Use specified period (e.g., 12 for monthly, 4 for quarterly). (5) data_completion [OPTIONAL, default=1] - Missing data handling. (6) aggregation [OPTIONAL, default=1] - Duplicate timeline handling. Example usage in Qlik: Create a forecast table by loading historical data and future periods, then apply this function to generate predictions for each future period.",
+      "Type": 2,
+      "ReturnType": 1,
+      "Params": {
+        "1_values": 1,
+        "2_timeline": 1,
+        "3_target_timeline": 1,
+        "4_seasonality": 1,
+        "5_data_completion": 1,
+        "6_aggregation": 1
+      }
+    },
+    {
+      "Id": 5,
+      "Name": "FORECAST_ETS_CONFINT",
+      "Description": "Returns the confidence interval bounds for a forecast at a specified confidence level. Returns TWO rows: the first row contains the lower bound, the second row contains the upper bound. Default confidence level is 0.95 (95%). Parameters: (1) values - Historical values, (2) timeline - Time points, (3) target_date - The future point to forecast, (4) confidence_level [OPTIONAL, default=0.95] - Value between 0 and 1 (e.g., 0.95 for 95% confidence), (5) seasonality [OPTIONAL], (6) data_completion [OPTIONAL], (7) aggregation [OPTIONAL]. Excel equivalent: =FORECAST.ETS.CONFINT(target_date, values, timeline, confidence_level, [seasonality], [data_completion], [aggregation])",
+      "Type": 1,
+      "ReturnType": 1,
+      "Params": {
+        "1_values": 1,
+        "2_timeline": 1,
+        "3_target_date": 1,
+        "4_confidence_level": 1,
+        "5_seasonality": 1,
+        "6_data_completion": 1,
+        "7_aggregation": 1
+      }
+    },
+    {
+      "Id": 6,
+      "Name": "FORECAST_ETS_SEASONALITY_TABLE",
+      "Description": "Extended FORECAST.ETS.SEASONALITY function that returns a COMPLETE FORECAST TABLE including historical data with seasonal decomposition and future forecasts. This is a TENSOR function that outputs multiple rows. Output columns (returned as separate calls or combined): For each row, returns the forecasted/fitted value. Use in combination with your timeline to build complete forecast tables. This function first detects seasonality automatically, then applies Holt-Winters seasonal exponential smoothing to generate: (1) Fitted values for historical periods (in-sample), (2) Forecasted values for future periods (out-of-sample). Parameters: (1) values [REQUIRED] - Historical time series values (e.g., 24 months of sales data). (2) timeline [REQUIRED] - Corresponding time points (e.g., month numbers 1-24). (3) horizon [REQUIRED] - Number of future periods to forecast (e.g., 12 for 12-month forecast). (4) data_completion [OPTIONAL, default=1] - Missing data handling: 0=zeros, 1=interpolate. (5) aggregation [OPTIONAL, default=1] - Duplicate handling: 1=AVG, 2=COUNT, 3=COUNTA, 4=MAX, 5=MEDIAN, 6=MIN, 7=SUM. Typical usage: Load 2 years of monthly data (24 values), set horizon=12 to get 12-month forecast. Function will auto-detect seasonality=12 (monthly pattern) and return 36 values total (24 historical fitted + 12 forecasted).",
+      "Type": 2,
+      "ReturnType": 1,
+      "Params": {
+        "1_values": 1,
+        "2_timeline": 1,
+        "3_horizon": 1,
+        "4_data_completion": 1,
+        "5_aggregation": 1
+      }
+    }
+  ]
+}
