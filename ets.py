@@ -103,12 +103,13 @@ def _prepare_data(
 
 def _detect_seasonality_autocorrelation(values: np.ndarray, max_period: int = None) -> int:
     """
-    ИСПРАВЛЕННАЯ функция детекции сезонности.
-    Ключевые изменения:
-    1. Правильная нормализация автокорреляции
-    2. Приоритет меньших периодов (как в Excel)
-    3. Проверка на гармоники
-    4. Минимальный порог значимости
+    Detect seasonality period using autocorrelation analysis.
+    Matches Excel's FORECAST.ETS.SEASONALITY algorithm.
+    
+    Excel behavior:
+    - Tests periods 2 through n/2
+    - Prefers SMALLER periods with significant correlation
+    - Requires at least 2 complete cycles
     """
     n = len(values)
     
@@ -123,74 +124,78 @@ def _detect_seasonality_autocorrelation(values: np.ndarray, max_period: int = No
     if max_period < 2:
         return 1
     
-    # Detrend - удаление линейного тренда
+    # ==========================================
+    # Шаг 1: Detrending (линейный тренд)
+    # ==========================================
     x = np.arange(n)
     coeffs = np.polyfit(x, values, 1)
     trend = np.polyval(coeffs, x)
     detrended = values - trend
     
-    # Нормализация
+    # ==========================================
+    # Шаг 2: Нормализация
+    # ==========================================
     std = np.std(detrended)
-    if std == 0 or np.isnan(std) or std < 1e-10:
+    if std < 1e-10:
         return 1
-    
     detrended = (detrended - np.mean(detrended)) / std
     
-    # Расчёт автокорреляции
+    # ==========================================
+    # Шаг 3: Расчёт автокорреляции
+    # ==========================================
     autocorr = np.zeros(max_period + 1)
     
     for lag in range(1, max_period + 1):
         if n - lag > 0:
-            # Корректный расчёт автокорреляции
-            corr = np.corrcoef(detrended[:-lag], detrended[lag:])[0, 1]
-            if not np.isnan(corr):
-                autocorr[lag] = corr
+            c = np.corrcoef(detrended[:-lag], detrended[lag:])[0, 1]
+            if not np.isnan(c):
+                autocorr[lag] = c
     
-    # Поиск пиков (локальные максимумы)
+    # ==========================================
+    # Шаг 4: Поиск пиков (локальные максимумы)
+    # ==========================================
     peaks = []
+    
     for i in range(2, max_period):
+        # Пик: больше обоих соседей
         if autocorr[i] > autocorr[i-1] and autocorr[i] > autocorr[i+1]:
-            if autocorr[i] > 0.15:  # Порог значимости
+            if autocorr[i] > 0.05:  # Минимальный порог
                 peaks.append((i, autocorr[i]))
     
-    # Если нет пиков - ищем максимум
+    # ==========================================
+    # Шаг 5: Выбор периода (Excel логика)
+    # ==========================================
+    
     if not peaks:
-        max_corr = np.max(autocorr[1:])
-        if max_corr > 0.3:
-            return int(np.argmax(autocorr[1:]) + 1)
+        # Fallback: период с максимальной автокорреляцией
+        max_idx = np.argmax(autocorr[1:]) + 1
+        if autocorr[max_idx] > 0.1:
+            return max_idx
         return 1
     
-    # Excel предпочитает НАИМЕНЬШИЙ значимый период
-    # Сортируем по периоду (возрастание)
+    # Сортируем по периоду (ВОЗРАСТАНИЕ) - Excel предпочитает меньшие периоды
     peaks.sort(key=lambda x: x[0])
     
-    # Проверка на гармонические отношения
-    # Если период 4, проверяем не является ли 2 истинным периодом
-    final_peaks = []
+    # Проверяем каждый пик начиная с наименьшего
     for period, corr in peaks:
-        is_harmonic = False
-        for existing_period, _ in final_peaks:
-            if period % existing_period == 0 and period // existing_period >= 2:
-                # Это гармоника, проверяем корреляцию
-                if corr < 0.9 * final_peaks[0][1]:
-                    is_harmonic = True
-                    break
-        if not is_harmonic:
-            final_peaks.append((period, corr))
+        # Требуем минимум 2 полных цикла
+        if n >= period * 2:
+            # Проверяем не является ли гармоникой меньшего периода
+            is_harmonic = False
+            for smaller_period, smaller_corr in peaks:
+                if smaller_period < period and period % smaller_period == 0:
+                    # Если меньший период имеет сравнимую корреляцию - это гармоника
+                    if smaller_corr >= 0.5 * corr:
+                        is_harmonic = True
+                        break
+            
+            if not is_harmonic:
+                logger.info(f"Seasonality detected: {period} (corr={corr:.3f})")
+                return period
     
-    if final_peaks:
-        # Возвращаем наименьший период с хорошей корреляцией
-        best_period = final_peaks[0][0]
-        best_corr = final_peaks[0][1]
-        
-        # Валидация: минимум 2 полных цикла
-        if n >= best_period * 2 and best_corr > 0.15:
-            logger.info(f"Seasonality detected: {best_period} (corr={best_corr:.3f}, n={n})")
-            return best_period
-    
-    # Fallback: период с максимальной корреляцией
-    peaks.sort(key=lambda x: x[1], reverse=True)
-    return peaks[0][0] if peaks else 1
+    # Fallback: наименьший период
+    return peaks[0][0]
+
 
 
 def _detect_seasonality_statsmodels(values: np.ndarray) -> int:
@@ -237,14 +242,10 @@ def forecast_ets_seasonality(
     values: List[float],
     timeline: List[float] = None,
     data_completion: int = DataCompletion.INTERPOLATE,
-    aggregation: int = Aggregation.AVERAGE,
-    use_statsmodels: bool = False
+    aggregation: int = Aggregation.AVERAGE
 ) -> int:
     """
     Excel-compatible FORECAST.ETS.SEASONALITY function.
-    
-    Args:
-        use_statsmodels: If True and available, use statsmodels for detection
     """
     try:
         values = np.array(values, dtype=float)
@@ -254,6 +255,7 @@ def forecast_ets_seasonality(
         else:
             timeline = np.array(timeline, dtype=float)
         
+        # Подготовка данных (сортировка, агрегация, интерполяция)
         values_clean, timeline_clean = _prepare_data(
             values.tolist(),
             timeline.tolist(),
@@ -265,11 +267,9 @@ def forecast_ets_seasonality(
             logger.warning("Insufficient data points for seasonality detection")
             return 1
         
-        # Выбор метода детекции
-        if use_statsmodels and STATS_AVAILABLE:
-            seasonality = _detect_seasonality_statsmodels(values_clean)
-        else:
-            seasonality = _detect_seasonality_autocorrelation(values_clean)
+        # ВАЖНО: передаём ТОЛЬКО значения в детектор сезонности
+        # Timeline уже использован в _prepare_data для сортировки
+        seasonality = _detect_seasonality_autocorrelation(values_clean)
         
         logger.info(f"Detected seasonality period: {seasonality} (data points: {len(values_clean)})")
         return int(seasonality)
@@ -383,8 +383,6 @@ def forecast_ets(
         raise
 
 
-# Остальные функции (forecast_ets_trend, forecast_ets_series, etc.) 
-# остаются без изменений или аналогично обновляются
 def forecast_ets_trend(
     values: List[float],
     timeline: List[float] = None,

@@ -1,0 +1,16 @@
+2026-02-25 10:11:46,319 - INFO - ExtensionService_forecast : 80 - Logging enabled - Forecast ETS SSE v2.0.0
+2026-02-25 10:11:46,335 - INFO - ExtensionService_forecast : 612 - *** Running server in insecure mode on port: 50051 ***
+2026-02-25 10:12:27,120 - INFO - ExtensionService_forecast : 537 - GetCapabilities
+2026-02-25 10:12:27,121 - INFO - ExtensionService_forecast : 556 - Adding to capabilities: PING(['1_value'])
+2026-02-25 10:12:27,121 - INFO - ExtensionService_forecast : 556 - Adding to capabilities: FORECAST_ETS(['1_values', '2_timeline', '3_seasonality', '4_data_completion', '5_aggregation'])
+2026-02-25 10:12:27,121 - INFO - ExtensionService_forecast : 556 - Adding to capabilities: FORECAST_ETS_SEASONALITY(['1_values', '2_timeline', '3_data_completion', '4_aggregation'])
+2026-02-25 10:12:27,121 - INFO - ExtensionService_forecast : 556 - Adding to capabilities: FORECAST_ETS_TREND(['1_values', '2_timeline', '3_seasonality', '4_data_completion', '5_aggregation'])
+2026-02-25 10:12:27,122 - INFO - ExtensionService_forecast : 556 - Adding to capabilities: FORECAST_ETS_SERIES(['1_values', '2_timeline', '3_target_timeline', '4_seasonality', '5_data_completion', '6_aggregation'])
+2026-02-25 10:12:27,122 - INFO - ExtensionService_forecast : 556 - Adding to capabilities: FORECAST_ETS_CONFINT(['1_values', '2_timeline', '3_target_date', '4_confidence_level', '5_seasonality', '6_data_completion', '7_aggregation'])
+2026-02-25 10:12:27,122 - INFO - ExtensionService_forecast : 556 - Adding to capabilities: FORECAST_ETS_SEASONALITY_TABLE(['1_values', '2_timeline', '3_horizon', '4_data_completion', '5_aggregation'])
+2026-02-25 10:22:04,182 - INFO - ExtensionService_forecast : 568 - ExecuteFunction (functionId: 2)
+2026-02-25 10:22:04,232 - INFO - ExtensionService_forecast : 173 - FORECAST_ETS_SEASONALITY: detected seasonality = 1
+2026-02-25 10:22:04,234 - INFO - ExtensionService_forecast : 568 - ExecuteFunction (functionId: 2)
+2026-02-25 10:22:04,241 - INFO - ExtensionService_forecast : 173 - FORECAST_ETS_SEASONALITY: detected seasonality = 10
+2026-02-25 10:22:04,243 - INFO - ExtensionService_forecast : 568 - ExecuteFunction (functionId: 2)
+2026-02-25 10:22:04,256 - INFO - ExtensionService_forecast : 173 - FORECAST_ETS_SEASONALITY: detected seasonality = 1
