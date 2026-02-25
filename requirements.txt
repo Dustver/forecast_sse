@@ -1,5 +1,15 @@
-grpcio>=1.60
-protobuf>=4.21
-numpy>=1.26
-# Optional (improves CONFINT z-score calculation); code has fallback if missing.
-scipy>=1.11
+# Qlik Sense Server Side Extension - FORECAST.ETS
+
+# Core SSE communication
+grpcio==1.78.0
+protobuf==3.20.0
+
+# Numerical calculations
+numpy==2.4.2
+
+# Statistical functions (confidence intervals)
+scipy==1.17.0
+
+# Optional: Advanced time series (not currently used but available)
+statsmodels==0.14.6
+pandas==3.0.1
