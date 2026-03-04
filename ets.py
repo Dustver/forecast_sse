@@ -2,6 +2,7 @@ import numpy as np
 from collections import defaultdict
 from typing import List, Tuple, Optional, Union
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,8 @@ def _prepare_data(
     values: List[float],
     timeline: List[float],
     data_completion: int = DataCompletion.INTERPOLATE,
-    aggregation: int = Aggregation.AVERAGE
+    aggregation: int = Aggregation.AVERAGE,
+    min_valid_points: int = 2
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Подготовка данных (без изменений)"""
     if len(values) != len(timeline):
@@ -43,8 +45,8 @@ def _prepare_data(
                    and not (isinstance(v, float) and np.isnan(v))
                    and not (isinstance(t, float) and np.isnan(t))]
 
-    if len(valid_pairs) < 2:
-        raise ValueError("At least 2 valid data points required")
+    if len(valid_pairs) < min_valid_points:
+        raise ValueError(f"At least {min_valid_points} valid data points required")
 
     values_clean = [p[0] for p in valid_pairs]
     timeline_clean = [p[1] for p in valid_pairs]
@@ -101,10 +103,91 @@ def _prepare_data(
     return values_arr, timeline_arr
 
 
+def _detect_seasonality_excel_com(
+    values: List[Optional[float]],
+    timeline: List[float],
+    data_completion: int,
+    aggregation: int
+) -> Optional[int]:
+    """
+    Exact seasonality from Excel itself via COM automation (Windows + Excel required).
+    Returns None when Excel automation is unavailable.
+    """
+    if os.name != "nt":
+        return None
+
+    try:
+        import win32com.client  # type: ignore
+    except Exception:
+        return None
+
+    app = None
+    wb = None
+    try:
+        app = win32com.client.DispatchEx("Excel.Application")
+        app.Visible = False
+        app.DisplayAlerts = False
+        wb = app.Workbooks.Add()
+        ws = wb.Worksheets(1)
+
+        values_list = [None if v is None or (isinstance(v, float) and np.isnan(v)) else float(v) for v in values]
+        timeline_list = []
+        for t in timeline:
+            if t is None:
+                timeline_list.append(None)
+            elif isinstance(t, np.generic):
+                timeline_list.append(t.item())
+            else:
+                timeline_list.append(t)
+
+        n = len(values_list)
+        if n == 0:
+            return 1
+
+        # Write data to worksheet for robust COM call.
+        for i, (v, t) in enumerate(zip(values_list, timeline_list), start=1):
+            if v is None:
+                ws.Cells(i, 1).Value = None
+            else:
+                ws.Cells(i, 1).Value = v
+            ws.Cells(i, 2).Value = t
+
+        values_range = ws.Range(ws.Cells(1, 1), ws.Cells(n, 1))
+        timeline_range = ws.Range(ws.Cells(1, 2), ws.Cells(n, 2))
+
+        result = app.WorksheetFunction.Forecast_ETS_Seasonality(
+            values_range,
+            timeline_range,
+            int(data_completion),
+            int(aggregation)
+        )
+
+        seasonality = int(round(float(result)))
+        return seasonality if seasonality >= 1 else 1
+    except Exception:
+        return None
+    finally:
+        try:
+            if wb is not None:
+                wb.Close(SaveChanges=False)
+        except Exception:
+            pass
+        try:
+            if app is not None:
+                app.Quit()
+        except Exception:
+            pass
+
+
 def _detect_seasonality_autocorrelation(values: np.ndarray, max_period: int = None) -> int:
     """
     Detect seasonality period using autocorrelation analysis.
-    Matches Excel's FORECAST.ETS.SEASONALITY algorithm.
+    Conservative algorithm that matches Excel's FORECAST.ETS.SEASONALITY.
+    
+    Excel returns 1 (no seasonality) when:
+    - Autocorrelation is too weak (< 0.2 for preferred periods)
+    - Pattern is not consistent across cycles
+    - Too much noise in the data
     """
     n = len(values)
     
@@ -119,28 +202,74 @@ def _detect_seasonality_autocorrelation(values: np.ndarray, max_period: int = No
     if max_period < 2:
         return 1
     
-    # Detrending
+    # ==========================================
+    # Шаг 1: Проверка на слишком много нулей/пустот
+    # ==========================================
+    non_zero_count = np.sum(values != 0)
+    zero_ratio = 1 - (non_zero_count / n)
+    
+    if zero_ratio > 0.5:  # Более 50% нулей = нет сезонности
+        logger.info(f"Too many zeros ({zero_ratio:.1%}), returning 1")
+        return 1
+    
+    if non_zero_count < 8:  # Минимум 8 ненулевых значений
+        return 1
+    
+    # ==========================================
+    # Шаг 2: Проверка вариации данных (CV - коэффициент вариации)
+    # ==========================================
+    mean_val = np.mean(values[values != 0])
+    std_val = np.std(values[values != 0])
+    
+    if mean_val > 0:
+        cv = std_val / mean_val
+        if cv < 0.1:  # Слишком мало вариации = нет сезонности
+            logger.info(f"Low variation (CV={cv:.3f}), returning 1")
+            return 1
+    
+    # ==========================================
+    # Шаг 3: Detrending (линейный тренд)
+    # ==========================================
     x = np.arange(n)
     coeffs = np.polyfit(x, values, 1)
     trend = np.polyval(coeffs, x)
     detrended = values - trend
     
-    # Normalize
+    # ==========================================
+    # Шаг 4: Нормализация
+    # ==========================================
     std = np.std(detrended)
     if std < 1e-10:
         return 1
     detrended = (detrended - np.mean(detrended)) / std
     
-    # Autocorrelation
+    # ==========================================
+    # Шаг 5: Расчёт автокорреляции
+    # ==========================================
     autocorr = np.zeros(max_period + 1)
+    
     for lag in range(1, max_period + 1):
         if n - lag > 0:
             c = np.corrcoef(detrended[:-lag], detrended[lag:])[0, 1]
             if not np.isnan(c):
                 autocorr[lag] = c
     
-    # Preferred periods
-    preferred_periods = {2, 3, 4, 6, 8, 12, 24}
+    # ==========================================
+    # Шаг 6: Поиск пиков автокорреляции
+    # ==========================================
+    peaks = []
+    
+    for i in range(2, max_period):
+        # Пик: больше обоих соседей
+        if autocorr[i] > autocorr[i-1] and autocorr[i] > autocorr[i+1]:
+            peaks.append((i, autocorr[i]))
+    
+    # ==========================================
+    # Шаг 7: Оценка кандидатов с ОЧЕНЬ строгими порогами
+    # ==========================================
+    
+    # Предпочтительные периоды для месячных данных
+    preferred_periods = {2, 3, 4, 6, 8, 9, 10, 11, 12, 24}
     
     candidates = []
     
@@ -150,48 +279,73 @@ def _detect_seasonality_autocorrelation(values: np.ndarray, max_period: int = No
         
         corr = autocorr[period]
         
-        if corr < 0.05:
+        # ★★★ СТРОГИЙ ПОРОГ: минимум 0.15 для не-предпочтительных, 0.1 для предпочтительных
+        min_corr = 0.10 if period in preferred_periods else 0.15
+        
+        if corr < min_corr:
             continue
         
         score = corr
         
-        # Бонусы
+        # Бонус 1: Период делит длину данных нацело (24 месяца)
         if n % period == 0:
-            score *= 3.0
+            score *= 1.5  # Уменьшил с 2.5 до 1.5
+        
+        # Бонус 2: Предпочтительный период
         if period in preferred_periods:
-            score *= 1.5
+            score *= 1.2  # Уменьшил с 1.5 до 1.2
+        
+        # Бонус 3: Много полных циклов
         cycles = n / period
         if cycles >= 3:
-            score *= 1.2
-        
-        # ★★★ Штраф за большие периоды (ключевое изменение!)
-        score *= (1.0 / np.log(period + 1))
+            score *= 1.1  # Уменьшил с 1.2 до 1.1
         
         candidates.append((period, score, corr))
     
     if not candidates:
+        logger.info(f"No candidates passed threshold, returning 1")
         return 1
     
-    # Сортировка по score
+    # ==========================================
+    # Шаг 8: Выбор лучшего периода
+    # ==========================================
+    
+    # Сортируем по score (убывание)
     candidates.sort(key=lambda x: x[1], reverse=True)
     
     best_period = candidates[0][0]
     best_score = candidates[0][1]
     best_corr = candidates[0][2]
     
-    # Проверка на меньшие периоды которые делят n
-    for period, score, corr in candidates:
+    # ★★★ ПРОВЕРКА: Если лучшая корреляция слишком низкая - возвращаем 1
+    if best_corr < 0.15:
+        logger.info(f"Best correlation too low ({best_corr:.3f}), returning 1")
+        return 1
+    
+    # Проверка: если меньший период делит n и имеет сравнимую корреляцию
+    for period, score, corr in candidates[1:]:
         if period < best_period and n % period == 0:
-            if corr > 0.4 * best_corr:
+            if corr > 0.6 * best_corr:  # Увеличил с 0.4 до 0.6
                 best_period = period
                 best_corr = corr
                 break
     
-    if best_corr < 0.1:
-        return 1
+    # ★★★ ПРОВЕРКА КОНСИСТЕНТНОСТИ: Проверяем что паттерн повторяется
+    if n >= best_period * 2:
+        # Сравниваем первые два цикла
+        cycle1 = values[:best_period]
+        cycle2 = values[best_period:best_period*2]
+        
+        if len(cycle1) == len(cycle2):
+            cycle_corr = np.corrcoef(cycle1, cycle2)[0, 1]
+            if not np.isnan(cycle_corr) and cycle_corr < 0.1:
+                logger.info(f"Low cycle consistency ({cycle_corr:.3f}), returning 1")
+                return 1
     
     logger.info(f"Seasonality detected: {best_period} (score={best_score:.3f}, corr={best_corr:.3f})")
     return best_period
+
+
 
 
 def _detect_seasonality_statsmodels(values: np.ndarray) -> int:
@@ -245,35 +399,58 @@ def forecast_ets_seasonality(
     Excel-compatible FORECAST.ETS.SEASONALITY function.
     """
     try:
-        values = np.array(values, dtype=float)
-        
+        if values is None:
+            return 1
+
+        raw_values = list(values)
         if timeline is None:
-            timeline = np.arange(len(values), dtype=float)
+            raw_timeline = [float(i) for i in range(len(raw_values))]
         else:
-            timeline = np.array(timeline, dtype=float)
+            raw_timeline = list(timeline)
+
+        if len(raw_values) != len(raw_timeline):
+            logger.error("Values and timeline must have the same length")
+            return 1
+
+        # Try exact Excel behavior first, if available, with raw inputs.
+        use_excel_com = os.environ.get("SSE_USE_EXCEL_COM_SEASONALITY", "true").lower() == "true"
+        if use_excel_com:
+            excel_period = _detect_seasonality_excel_com(
+                raw_values, raw_timeline, data_completion, aggregation
+            )
+            if excel_period is not None:
+                logger.info(
+                    "Detected seasonality via Excel COM: %s (data points: %s)",
+                    excel_period, len(raw_values)
+                )
+                return int(excel_period)
+
+        values_arr = np.array(raw_values, dtype=float)
+        timeline_arr = np.array(raw_timeline, dtype=float)
         
         # Подготовка данных (сортировка, агрегация, интерполяция)
         values_clean, timeline_clean = _prepare_data(
-            values.tolist(),
-            timeline.tolist(),
+            values_arr.tolist(),
+            timeline_arr.tolist(),
             data_completion,
-            aggregation
+            aggregation,
+            min_valid_points=1
         )
-        
+
         if len(values_clean) < 4:
             logger.warning("Insufficient data points for seasonality detection")
             return 1
-        
+
         # ВАЖНО: передаём ТОЛЬКО значения в детектор сезонности
         # Timeline уже использован в _prepare_data для сортировки
         seasonality = _detect_seasonality_autocorrelation(values_clean)
         
         logger.info(f"Detected seasonality period: {seasonality} (data points: {len(values_clean)})")
         return int(seasonality)
-        
+
     except Exception as e:
         logger.error(f"Error in forecast_ets_seasonality: {str(e)}")
-        raise
+        return 1
 
 
 def forecast_ets(

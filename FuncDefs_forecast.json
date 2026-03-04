@@ -95,6 +95,19 @@
         "4_data_completion": 1,
         "5_aggregation": 1
       }
+    },
+    {
+      "Id": 7,
+      "Name": "SEASONALITY",
+      "Description": "Excel-compatible FORECAST.ETS.SEASONALITY function. Returns the length of the repetitive pattern (seasonal period) that is automatically detected in the specified time series. This is an AGGREGATION function that analyzes ALL input rows and returns a SINGLE numeric value representing the detected seasonality period. Algorithm: Uses autocorrelation analysis on detrended data to detect repeating patterns. The function searches for peaks in the autocorrelation function that indicate periodic behavior. Common return values: 1 = No seasonality detected, 4 = Quarterly pattern, 7 = Weekly pattern (daily data), 12 = Monthly pattern (monthly data), 52 = Weekly pattern (weekly data over years). Parameters: (1) values [REQUIRED] - The historical numeric values of your time series (e.g., sales, quantities, temperatures). Pass as aggregated column. (2) timeline [REQUIRED] - The corresponding time points for each value. Should be numeric (e.g., Qlik date serial numbers, month numbers 1-24, or sequential integers). Must have same count as values. (3) data_completion [OPTIONAL, default=1] - How to handle missing data points in the timeline: 0 = Treat missing points as zero values, 1 = Interpolate missing values using linear interpolation. (4) aggregation [OPTIONAL, default=1] - How to aggregate when multiple values exist for the same timeline point: 1 = AVERAGE, 2 = COUNT, 3 = COUNTA, 4 = MAX, 5 = MEDIAN, 6 = MIN, 7 = SUM. Excel equivalent: =FORECAST.ETS.SEASONALITY(values, timeline, [data_completion], [aggregation]). Minimum data requirement: At least 2 complete seasonal cycles are recommended for reliable detection (e.g., 24 months for monthly seasonality). Returns 1 if insufficient data or no pattern detected.",
+      "Type": 1,
+      "ReturnType": 1,
+      "Params": {
+        "1_values": 1,
+        "2_timeline": 1,
+        "3_data_completion": 1,
+        "4_aggregation": 1
+      }
     }
   ]
 }

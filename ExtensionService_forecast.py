@@ -37,6 +37,7 @@ from ets import (
     DataCompletion,
     Aggregation
 )
+from seasonality import SEASONALITY
 
 # Ensure protobuf stubs are importable.
 # Supports either:
@@ -99,7 +100,8 @@ class ExtensionService(SSE.ConnectorServicer):
             3: '_forecast_ets_trend',
             4: '_forecast_ets_series',
             5: '_forecast_ets_confint',
-            6: '_forecast_ets_seasonality_table'
+            6: '_forecast_ets_seasonality_table',
+            7: '_seasonality'
         }
 
     @staticmethod
@@ -113,6 +115,74 @@ class ExtensionService(SSE.ConnectorServicer):
                 yield SSE.BundledRows(
                     rows=[SSE.Row(duals=[SSE.Dual(numData=value)])]
                 )
+    @staticmethod
+    def _seasonality(request, context):
+        """
+        FORECAST_ETS_SEASONALITY(values, timeline, [data_completion], [aggregation])
+
+        Detects the seasonal period in the time series data.
+        Matches Excel's FORECAST.ETS.SEASONALITY function.
+
+        Parameters:
+            values: Historical values (required)
+            timeline: Timeline points (required)
+            data_completion: 0=zeros, 1=interpolate (default=1)
+            aggregation: 1=AVG, 2=COUNT, 3=COUNTA, 4=MAX, 5=MEDIAN, 6=MIN, 7=SUM (default=1)
+
+        Returns:
+            Detected seasonality period (1 means no seasonality)
+        """
+        values = []
+        timeline = []
+        data_completion = DEFAULT_DATA_COMPLETION
+        aggregation = DEFAULT_AGGREGATION
+
+        for bundle in request:
+            for row in bundle.rows:
+                duals = row.duals
+                num_params = len(duals)
+
+                # Required: values (param 0)
+                values.append(duals[0].numData)
+
+                # Required: timeline (param 1)
+                if num_params > 1:
+                    timeline.append(duals[1].numData)
+
+                # Optional: data_completion (param 2)
+                if num_params > 2 and duals[2].numData is not None:
+                    dc = int(duals[2].numData)
+                    if dc in [0, 1]:
+                        data_completion = dc
+
+                # Optional: aggregation (param 3)
+                if num_params > 3 and duals[3].numData is not None:
+                    agg = int(duals[3].numData)
+                    if 1 <= agg <= 7:
+                        aggregation = agg
+
+        # If no timeline provided, create sequential integers
+        if not timeline:
+            timeline = list(range(len(values)))
+
+        try:
+            result = SEASONALITY(
+                values=values,
+                timeline=timeline,
+                data_completion=data_completion,
+                aggregation=aggregation,
+                use_statsmodels=USE_STATSMODELS
+            )
+            logging.info(f'FORECAST_ETS_SEASONALITY: detected seasonality = {result}')
+        except Exception as e:
+            logging.error(f'FORECAST_ETS_SEASONALITY error: {str(e)}')
+            result = 1  # Return 1 (no seasonality) on error
+
+        yield SSE.BundledRows(
+            rows=[SSE.Row(duals=[SSE.Dual(numData=float(result))])]
+        )
+
+
 
     @staticmethod
     def _forecast_ets_seasonality(request, context):
