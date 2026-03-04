@@ -1,10 +1,29 @@
+"""
+Shared enum declarations used by ScriptEval/SSE glue code.
+
+Why this file exists:
+- Qlik SSE passes metadata that describes function kind and argument/return types.
+- Multiple modules (`ScriptEval_forecast.py`, `ExtensionService_forecast.py`) need
+  a common set of constants to interpret those metadata values consistently.
+
+Design note:
+- Values in these enums are protocol-facing numeric codes.
+- Keep numeric values stable, because they are part of the integration contract.
+"""
+
 from enum import Enum
 
 
 class ArgType(Enum):
     """
-    Represents data types that can be used
-    as arguments in different script functions.
+    Data type classification for function arguments in script evaluation mode.
+
+    Meanings:
+    - Undefined (-1): invalid/uninitialized type.
+    - Empty (0): argument is present but empty.
+    - String (1): textual argument.
+    - Numeric (2): numeric argument.
+    - Mixed (3): heterogeneous payload.
     """
     Undefined = -1
     Empty = 0
@@ -15,8 +34,13 @@ class ArgType(Enum):
 
 class ReturnType(Enum):
     """
-    Represents return types that can
-    be used in script evaluation.
+    Return type classification for SSE function outputs.
+
+    Meanings:
+    - Undefined (-1): invalid/uninitialized output type.
+    - String (0): textual output.
+    - Numeric (1): numeric output.
+    - Dual (2): Qlik dual value (text + number).
     """
     Undefined = -1
     String = 0
@@ -26,7 +50,12 @@ class ReturnType(Enum):
 
 class FunctionType(Enum):
     """
-    Represents function types.
+    Function execution mode used by Qlik SSE runtime.
+
+    Modes:
+    - Scalar (0): one output row per input row.
+    - Aggregation (1): one output for a group of input rows.
+    - Tensor (2): table-like output with arbitrary row count.
     """
     Scalar = 0
     Aggregation = 1

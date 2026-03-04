@@ -2,7 +2,17 @@
 """
 Qlik Sense Server Side Extension for FORECAST.ETS Functions
 
-This SSE provides Excel-compatible FORECAST.ETS family of functions:
+This service is the transport/integration layer between Qlik SSE protocol and
+the forecasting engine in `ets.py`.
+
+Main responsibilities:
+1. Parse incoming gRPC/SSE bundles into Python lists and scalar options.
+2. Validate optional parameters and apply defaults compatible with Excel usage.
+3. Call the corresponding core function (`forecast_ets*`).
+4. Convert Python outputs back to SSE `Dual` rows.
+5. Expose function metadata via `GetCapabilities`.
+
+This SSE provides Excel-compatible FORECAST.ETS family endpoints:
 - FORECAST_ETS_SEASONALITY(values, timeline, [data_completion], [aggregation])
 - FORECAST_ETS(values, timeline, [seasonality], [data_completion], [aggregation])
 - FORECAST_ETS_TREND(values, timeline, [seasonality], [data_completion], [aggregation])
@@ -64,18 +74,40 @@ DEFAULT_CONFIDENCE_LEVEL = 0.95
 
 USE_STATSMODELS = os.environ.get('SSE_USE_STATSMODELS', 'true').lower() == 'true'
 
+# Parameter position convention used across handlers:
+# - The SSE request is row-oriented: each row contains `duals` array with params.
+# - For aggregate functions, we collect values from all rows and compute once.
+# - Optional params are usually repeated as constants across rows.
+#   Implementation rule: "last valid value wins" while scanning rows.
+#
+# Common positions:
+#   p0 = values
+#   p1 = timeline
+#   p2..pn = function-specific optional args (see each handler docstring).
+
 class ExtensionService(SSE.ConnectorServicer):
     """
-    SSE Plugin for Excel-compatible FORECAST.ETS functions.
+    gRPC implementation of the Qlik SSE Connector service.
+
+    Qlik calls two main RPCs:
+    - `GetCapabilities`: asks plugin which functions are available.
+    - `ExecuteFunction`: sends grouped rows for one function id.
+
+    This class maps function ids to static handlers that parse SSE bundles and
+    stream results back.
     """
 
     def __init__(self, funcdef_file):
         """
-        Class initializer.
-        :param funcdef_file: a function definition JSON file
+        Initialize service and logging.
+
+        Args:
+            funcdef_file: path to JSON function definition file used by
+                `GetCapabilities`.
         """
         self._function_definitions = funcdef_file
         self.scriptEval = ScriptEval()
+        # Ensure log directory exists before loading logger config.
         os.makedirs('logs', exist_ok=True)
         log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logger.config')
         logging.config.fileConfig(log_file)
@@ -84,14 +116,18 @@ class ExtensionService(SSE.ConnectorServicer):
     @property
     def function_definitions(self):
         """
-        :return: json file with function definitions
+        Function definition file path used for capability negotiation.
         """
         return self._function_definitions
 
     @property
     def functions(self):
         """
-        :return: Mapping of function id and implementation
+        Registry mapping Qlik `functionId` -> class method name.
+
+        Important:
+        - IDs must match `FuncDefs_forecast.json`.
+        - Values are method names resolved by `getattr` in ExecuteFunction.
         """
         return {
             0: '_ping',
@@ -107,7 +143,11 @@ class ExtensionService(SSE.ConnectorServicer):
     @staticmethod
     def _ping(request, context):
         """
-        Simple ping function for testing connectivity.
+        Echo helper for connectivity/smoke tests.
+
+        Protocol behavior:
+        - Reads first numeric dual from each incoming row.
+        - Streams one output row with exactly that numeric value.
         """
         for bundle in request:
             for row in bundle.rows:
@@ -118,19 +158,17 @@ class ExtensionService(SSE.ConnectorServicer):
     @staticmethod
     def _seasonality(request, context):
         """
-        FORECAST_ETS_SEASONALITY(values, timeline, [data_completion], [aggregation])
+        Legacy alias endpoint for seasonality detection.
 
-        Detects the seasonal period in the time series data.
-        Matches Excel's FORECAST.ETS.SEASONALITY function.
+        Signature (row layout):
+            param0 -> value (required)
+            param1 -> timeline (required but can be omitted globally)
+            param2 -> data_completion (optional, 0/1)
+            param3 -> aggregation (optional, 1..7)
 
-        Parameters:
-            values: Historical values (required)
-            timeline: Timeline points (required)
-            data_completion: 0=zeros, 1=interpolate (default=1)
-            aggregation: 1=AVG, 2=COUNT, 3=COUNTA, 4=MAX, 5=MEDIAN, 6=MIN, 7=SUM (default=1)
-
-        Returns:
-            Detected seasonality period (1 means no seasonality)
+        Notes:
+        - This handler calls `SEASONALITY(...)` wrapper for backward compatibility.
+        - On any error, returns `1` (Excel semantic: no seasonality).
         """
         values = []
         timeline = []
@@ -150,12 +188,14 @@ class ExtensionService(SSE.ConnectorServicer):
                     timeline.append(duals[1].numData)
 
                 # Optional: data_completion (param 2)
+                # Accept only documented values 0/1; ignore invalid values silently.
                 if num_params > 2 and duals[2].numData is not None:
                     dc = int(duals[2].numData)
                     if dc in [0, 1]:
                         data_completion = dc
 
                 # Optional: aggregation (param 3)
+                # Accept only supported aggregation codes 1..7.
                 if num_params > 3 and duals[3].numData is not None:
                     agg = int(duals[3].numData)
                     if 1 <= agg <= 7:
@@ -163,6 +203,7 @@ class ExtensionService(SSE.ConnectorServicer):
 
         # If no timeline provided, create sequential integers
         if not timeline:
+            # Keeps aggregate use-cases functional when caller passes only values.
             timeline = list(range(len(values)))
 
         try:
@@ -189,17 +230,16 @@ class ExtensionService(SSE.ConnectorServicer):
         """
         FORECAST_ETS_SEASONALITY(values, timeline, [data_completion], [aggregation])
 
-        Detects the seasonal period in the time series data.
-        Matches Excel's FORECAST.ETS.SEASONALITY function.
+        Primary seasonality endpoint.
 
-        Parameters:
-            values: Historical values (required)
-            timeline: Timeline points (required)
-            data_completion: 0=zeros, 1=interpolate (default=1)
-            aggregation: 1=AVG, 2=COUNT, 3=COUNTA, 4=MAX, 5=MEDIAN, 6=MIN, 7=SUM (default=1)
+        Input parsing model:
+        - The request may contain multiple bundles; all rows are concatenated.
+        - Each row contributes one `value` (and optionally timeline/params).
+        - Optional parameters are "last non-null wins", which matches common
+          Qlik usage where optional args are repeated as constants per row.
 
-        Returns:
-            Detected seasonality period (1 means no seasonality)
+        Return:
+        - Single numeric row with detected period.
         """
         values = []
         timeline = []
@@ -256,17 +296,15 @@ class ExtensionService(SSE.ConnectorServicer):
         """
         FORECAST_ETS(values, timeline, [seasonality], [data_completion], [aggregation])
 
-        Forecasts the next value using ETS algorithm.
+        Aggregate endpoint that returns one-step-ahead forecast.
 
-        Parameters:
-            values: Historical values (required)
-            timeline: Timeline points (required)
-            seasonality: 0=auto-detect, 1=no seasonality, >1=specific period (default=0)
-            data_completion: 0=zeros, 1=interpolate (default=1)
-            aggregation: 1-7 aggregation method (default=1)
+        Option semantics:
+        - `seasonality=0` enables auto-detection.
+        - `seasonality=1` forces non-seasonal model.
+        - `seasonality>1` forces specified period.
 
-        Returns:
-            Forecasted value for next period
+        Error behavior:
+        - Returns NaN if model fails, but does not abort the RPC stream.
         """
         values = []
         timeline = []
@@ -285,6 +323,7 @@ class ExtensionService(SSE.ConnectorServicer):
                     timeline.append(duals[1].numData)
 
                 if num_params > 2 and duals[2].numData is not None:
+                    # `seasonality` can be 0 (auto), 1 (none), >1 fixed period.
                     seasonality = int(duals[2].numData)
 
                 if num_params > 3 and duals[3].numData is not None:
@@ -324,10 +363,7 @@ class ExtensionService(SSE.ConnectorServicer):
         """
         FORECAST_ETS_TREND(values, timeline, [seasonality], [data_completion], [aggregation])
 
-        Returns the trend component (slope) of the time series.
-
-        Returns:
-            Trend value (slope per time unit)
+        Aggregate endpoint that returns trend slope of the prepared series.
         """
         values = []
         timeline = []
@@ -383,11 +419,14 @@ class ExtensionService(SSE.ConnectorServicer):
         """
         FORECAST_ETS_SERIES(values, timeline, target_timeline, [seasonality], [data_completion], [aggregation])
 
-        Returns forecasted values for multiple future time points.
-        This is a TENSOR function that returns multiple rows.
+        Tensor endpoint: returns one row per target point forecast.
 
-        Returns:
-            Multiple rows with forecasted values
+        Parsing specifics:
+        - `target_timeline` is collected row-wise from param2.
+        - If target timeline is empty, core function forecasts one next point.
+
+        Stream behavior:
+        - Outputs one `BundledRows` per result value.
         """
         values = []
         timeline = []
@@ -407,6 +446,7 @@ class ExtensionService(SSE.ConnectorServicer):
                     timeline.append(duals[1].numData)
 
                 if num_params > 2:
+                    # For tensor call this is usually a future timestamp per row.
                     target_timeline.append(duals[2].numData)
 
                 if num_params > 3 and duals[3].numData is not None:
@@ -451,10 +491,11 @@ class ExtensionService(SSE.ConnectorServicer):
         """
         FORECAST_ETS_CONFINT(values, timeline, target_date, [confidence_level], [seasonality], [data_completion], [aggregation])
 
-        Returns confidence interval bounds for a forecast.
+        Aggregate endpoint returning lower/upper confidence bounds.
 
-        Returns:
-            Two rows: lower bound and upper bound
+        Output contract:
+        - Returns exactly two rows in one bundle:
+          row1 = lower bound, row2 = upper bound.
         """
         values = []
         timeline = []
@@ -479,6 +520,7 @@ class ExtensionService(SSE.ConnectorServicer):
 
                 if num_params > 3 and duals[3].numData is not None:
                     cl = duals[3].numData
+                    # Excel-style confidence level is open interval (0,1).
                     if 0 < cl < 1:
                         confidence_level = cl
 
@@ -525,8 +567,14 @@ class ExtensionService(SSE.ConnectorServicer):
         """
         FORECAST_ETS_SEASONALITY_TABLE(values, timeline, horizon, [data_completion], [aggregation])
 
-        Returns fitted (historical) + forecast (future) values as a TENSOR.
-        Output rows count = len(cleaned historical series) + horizon.
+        Tensor endpoint for full fitted+forecast sequence.
+
+        Typical use:
+        - Caller passes historical values/timeline and fixed `horizon`.
+        - Function returns historical fitted values followed by future forecast.
+
+        Output cardinality:
+        - `len(cleaned_series) + horizon` rows.
         """
         values = []
         timeline = []
@@ -546,7 +594,8 @@ class ExtensionService(SSE.ConnectorServicer):
                 if num_params > 1:
                     timeline.append(duals[1].numData)
 
-                # Required: horizon (param 2) - typically constant, take last
+                # Required: horizon (param 2).
+                # In grouped calls this is usually repeated constant; last value is used.
                 if num_params > 2 and duals[2].numData is not None:
                     horizon = int(duals[2].numData)
 
@@ -566,6 +615,7 @@ class ExtensionService(SSE.ConnectorServicer):
             timeline = list(range(len(values)))
 
         if horizon is None:
+            # Safe default when caller omitted horizon.
             horizon = 12
 
         try:
@@ -594,9 +644,10 @@ class ExtensionService(SSE.ConnectorServicer):
     @staticmethod
     def _get_function_id(context):
         """
-        Retrieve function id from header.
-        :param context: context
-        :return: function id
+        Extract Qlik `functionId` from gRPC invocation metadata.
+
+        Qlik puts serialized `FunctionRequestHeader` into metadata key
+        `qlik-functionrequestheader-bin`. This helper decodes it and returns id.
         """
         metadata = dict(context.invocation_metadata())
         header = SSE.FunctionRequestHeader()
@@ -605,7 +656,10 @@ class ExtensionService(SSE.ConnectorServicer):
 
     def GetCapabilities(self, request, context):
         """
-        Get capabilities.
+        Build and return plugin capabilities for Qlik handshake.
+
+        Reads function definitions from JSON and mirrors them into protobuf
+        `Capabilities` response expected by Qlik engine.
         """
         logging.info('GetCapabilities')
 
@@ -635,7 +689,12 @@ class ExtensionService(SSE.ConnectorServicer):
 
     def ExecuteFunction(self, request_iterator, context):
         """
-        Call corresponding function based on function id sent in header.
+        Dispatch runtime SSE function call by `functionId`.
+
+        Flow:
+        1. Decode function id from metadata.
+        2. Resolve handler name via `self.functions`.
+        3. Call handler with request iterator/context.
         """
         func_id = self._get_function_id(context)
         logging.info('ExecuteFunction (functionId: {})'.format(func_id))
@@ -644,7 +703,10 @@ class ExtensionService(SSE.ConnectorServicer):
 
     def EvaluateScript(self, request, context):
         """
-        Support script evaluation, based on different function and data types.
+        Handle Qlik script-evaluation mode.
+
+        This path delegates to `ScriptEval_forecast.py` and supports only
+        Tensor/Aggregation modes configured for this plugin.
         """
         metadata = dict(context.invocation_metadata())
         header = SSE.ScriptRequestHeader()
@@ -662,10 +724,15 @@ class ExtensionService(SSE.ConnectorServicer):
 
     def Serve(self, port, pem_dir):
         """
-        Server
-        :param port: port to listen on.
-        :param pem_dir: Directory including certificates
-        :return: None
+        Start gRPC server and block forever.
+
+        Args:
+            port: TCP port for SSE endpoint.
+            pem_dir: TLS certificate directory. If provided, secure mode is used.
+
+        Runtime notes:
+        - Uses thread pool with 10 workers.
+        - Runs until KeyboardInterrupt.
         """
         server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
         SSE.add_ConnectorServicer_to_server(self, server)
@@ -693,6 +760,7 @@ class ExtensionService(SSE.ConnectorServicer):
 
 
 if __name__ == '__main__':
+    # CLI entrypoint used in local/dev and service wrappers.
     parser = argparse.ArgumentParser()
     parser.add_argument('--port', nargs='?', default='50053')
     parser.add_argument('--pem_dir', nargs='?')

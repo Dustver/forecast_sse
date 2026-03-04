@@ -1,3 +1,21 @@
+"""
+Core implementation of Excel-like FORECAST.ETS family for SSE.
+
+This module contains:
+- Data preparation (sorting, aggregation, gap handling),
+- Seasonality detection (Excel COM exact mode + fallback heuristics),
+- Point forecast and helper outputs (trend, intervals, forecast tables).
+
+Important behavior notes:
+- In exact mode (`SSE_USE_EXCEL_COM_SEASONALITY=true`) seasonality is taken
+  directly from Excel via COM, which is the closest possible match to
+  `FORECAST.ETS.SEASONALITY`.
+- If COM is unavailable, the module falls back to a conservative
+  autocorrelation-based detector.
+- In all error/edge cases around seasonality detection, the safe default is `1`
+  (Excel semantic: "no seasonality").
+"""
+
 import numpy as np
 from collections import defaultdict
 from typing import List, Tuple, Optional, Union
@@ -16,10 +34,23 @@ except ImportError:
     logger.warning("statsmodels not available, using fallback implementation")
 
 class DataCompletion:
+    """
+    Strategy for filling missing timeline points after regularization.
+
+    Values:
+    - ZEROS (0): absent periods are treated as zero values.
+    - INTERPOLATE (1): absent periods are filled by linear interpolation.
+    """
     ZEROS = 0
     INTERPOLATE = 1
 
 class Aggregation:
+    """
+    Strategy for collapsing duplicate timeline points.
+
+    Numeric codes mirror Excel's optional `aggregation` argument used in
+    FORECAST.ETS functions.
+    """
     AVERAGE = 1
     COUNT = 2
     COUNTA = 3
@@ -36,7 +67,22 @@ def _prepare_data(
     aggregation: int = Aggregation.AVERAGE,
     min_valid_points: int = 2
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Подготовка данных (без изменений)"""
+    """
+    Prepare time series for model routines.
+
+    Processing steps:
+    1. Validate equal lengths for values/timeline.
+    2. Drop pairs with missing value or missing timestamp.
+    3. Aggregate duplicates on the same timestamp using selected method.
+    4. Sort by timeline.
+    5. Build a regular grid using median timeline step.
+    6. Fill gaps using either interpolation or zeros.
+
+    Notes:
+    - This function is intended for model stability, not for exact Excel parity.
+      Exact parity for seasonality uses raw inputs through COM.
+    - `min_valid_points` allows callers to define strictness for short series.
+    """
     if len(values) != len(timeline):
         raise ValueError("Values and timeline must have the same length")
 
@@ -110,8 +156,23 @@ def _detect_seasonality_excel_com(
     aggregation: int
 ) -> Optional[int]:
     """
-    Exact seasonality from Excel itself via COM automation (Windows + Excel required).
-    Returns None when Excel automation is unavailable.
+    Detect seasonality by delegating calculation to Microsoft Excel via COM.
+
+    This path gives the highest possible compatibility with Excel formula:
+    `FORECAST.ETS.SEASONALITY(values, timeline, [data_completion], [aggregation])`.
+
+    Requirements:
+    - Windows OS,
+    - Installed Microsoft Excel,
+    - `pywin32` package available.
+
+    Returns:
+    - `int >= 1` when calculation succeeded,
+    - `None` when COM/Excel is unavailable or call failed.
+
+    Implementation detail:
+    - Inputs are written into a temporary workbook and passed as worksheet ranges
+      to avoid conversion quirks and to mimic normal sheet evaluation behavior.
     """
     if os.name != "nt":
         return None
@@ -181,13 +242,20 @@ def _detect_seasonality_excel_com(
 
 def _detect_seasonality_autocorrelation(values: np.ndarray, max_period: int = None) -> int:
     """
-    Detect seasonality period using autocorrelation analysis.
-    Conservative algorithm that matches Excel's FORECAST.ETS.SEASONALITY.
-    
-    Excel returns 1 (no seasonality) when:
-    - Autocorrelation is too weak (< 0.2 for preferred periods)
-    - Pattern is not consistent across cycles
-    - Too much noise in the data
+    Fallback seasonality detector based on autocorrelation.
+
+    This routine is used only when exact Excel COM mode is unavailable.
+    It is intentionally conservative and biased to return `1` unless
+    periodicity signal is sufficiently strong and consistent.
+
+    High-level logic:
+    1. Reject too-short series and invalid search range.
+    2. Reject sparse/low-information series (too many zeros, too few events).
+    3. Remove linear trend and normalize values.
+    4. Compute autocorrelation over candidate lags.
+    5. Score periods with domain heuristics and strict thresholds.
+    6. Validate consistency across cycles.
+    7. Return best period or `1`.
     """
     n = len(values)
     
@@ -350,8 +418,10 @@ def _detect_seasonality_autocorrelation(values: np.ndarray, max_period: int = No
 
 def _detect_seasonality_statsmodels(values: np.ndarray) -> int:
     """
-    Альтернативная детекция через statsmodels (если доступна).
-    Использует декомпозицию временного ряда.
+    Alternative seasonality detector via `statsmodels` decomposition.
+
+    This function is currently auxiliary and not used in the exact Excel path.
+    It is preserved as an optional fallback strategy for experimentation.
     """
     if not STATS_AVAILABLE:
         return _detect_seasonality_autocorrelation(values)
@@ -396,7 +466,24 @@ def forecast_ets_seasonality(
     use_statsmodels: bool = False
 ) -> int:
     """
-    Excel-compatible FORECAST.ETS.SEASONALITY function.
+    Excel-compatible seasonality detection entry point.
+
+    Priority:
+    1. Try exact Excel COM evaluation on raw inputs (if enabled/available).
+    2. Fall back to internal autocorrelation detector on prepared series.
+
+    Input semantics are aligned to Excel:
+    - `values`: historical series.
+    - `timeline`: matching timeline points (numeric or date-like in COM path).
+    - `data_completion`: 0 zeros, 1 interpolation.
+    - `aggregation`: duplicate timestamp aggregator.
+
+    Returns:
+    - Seasonal period as integer (`1` means no seasonality).
+
+    Robustness:
+    - Function never raises for user-data issues; it returns `1` on errors.
+      This matches SSE aggregate-friendly behavior.
     """
     try:
         if values is None:
@@ -463,7 +550,16 @@ def forecast_ets(
     use_statsmodels: bool = True  # По умолчанию используем statsmodels для прогноза
 ) -> float:
     """
-    FORECAST.ETS с опцией statsmodels.
+    Forecast one future point using ETS-style logic.
+
+    Behavior:
+    - If `seasonality == 0`, seasonality is auto-detected.
+    - If statsmodels is available and applicable, Holt-Winters from
+      `statsmodels` is used.
+    - Otherwise, internal additive Holt/Holt-Winters fallback is used.
+
+    Returns:
+    - Forecast for the specified `horizon` step ahead.
     """
     try:
         values = np.array(values, dtype=float)
@@ -565,10 +661,13 @@ def forecast_ets_trend(
     aggregation: int = Aggregation.AVERAGE
 ) -> float:
     """
-    Returns the trend component of the ETS model.
+    Estimate trend component (slope) for the prepared series.
+
+    If seasonality is present, a simple deseasonalization pass is applied
+    before linear regression.
 
     Returns:
-        Trend value (slope per time unit)
+        Trend value (slope per timeline step).
     """
     try:
         values = np.array(values, dtype=float)
@@ -624,18 +723,18 @@ def forecast_ets_series(
     aggregation: int = Aggregation.AVERAGE
 ) -> List[float]:
     """
-    Returns a series of forecasted values for multiple future points.
+    Forecast multiple target points.
 
     Args:
-        values: Historical values
-        timeline: Historical timeline
-        target_timeline: Future points to forecast
-        seasonality: Seasonal period (0 = auto-detect)
-        data_completion: Missing data handling
-        aggregation: Duplicate handling
+        values: Historical values.
+        timeline: Historical timeline.
+        target_timeline: Future points to forecast.
+        seasonality: Seasonal period (0 = auto-detect).
+        data_completion: Missing data handling mode.
+        aggregation: Duplicate handling mode.
 
     Returns:
-        List of forecasted values for each target point
+        Forecast value per requested target point.
     """
     try:
         values = np.array(values, dtype=float)
@@ -688,19 +787,23 @@ def forecast_ets_confint(
     aggregation: int = Aggregation.AVERAGE
 ) -> Tuple[float, float]:
     """
-    Returns the confidence interval for a forecast.
+    Compute forecast confidence interval.
 
     Args:
-        values: Historical values
-        timeline: Historical timeline
-        target_date: Point to forecast
-        confidence_level: Confidence level (default 0.95 = 95%)
-        seasonality: Seasonal period
-        data_completion: Missing data handling
-        aggregation: Duplicate handling
+        values: Historical values.
+        timeline: Historical timeline.
+        target_date: Point to forecast (if None -> next point).
+        confidence_level: Confidence level, e.g. 0.95.
+        seasonality: Seasonal period.
+        data_completion: Missing data handling mode.
+        aggregation: Duplicate handling mode.
 
     Returns:
-        Tuple of (lower_bound, upper_bound)
+        Tuple `(lower_bound, upper_bound)`.
+
+    Note:
+    - Residual error is estimated from rolling one-step predictions when
+      enough history exists; otherwise a simplified approximation is used.
     """
     try:
         from scipy import stats
@@ -794,29 +897,23 @@ def forecast_ets_seasonality_table(
     aggregation: int = Aggregation.AVERAGE
 ) -> dict:
     """
-    Extended FORECAST.ETS.SEASONALITY function that returns a complete forecast table.
+    Build a complete fitted+forecast table with auto-detected seasonality.
 
     This function:
-    1. Auto-detects seasonality from the input data
-    2. Fits the Holt-Winters model to historical data
-    3. Generates forecasts for the specified horizon
-    4. Returns a complete table with timeline, actual values, fitted values, and forecasts
+    1. Prepares input series.
+    2. Detects seasonality.
+    3. Fits internal Holt/Holt-Winters components.
+    4. Produces in-sample fitted values and out-of-sample forecasts.
 
     Args:
-        values: Historical time series values (e.g., 24 months of sales)
-        timeline: Corresponding time points (e.g., month numbers 1-24)
-        horizon: Number of future periods to forecast (default 12)
-        data_completion: Missing data handling (0=zeros, 1=interpolate)
-        aggregation: Duplicate handling (1=AVG, 2=COUNT, etc.)
+        values: Historical series.
+        timeline: Corresponding timeline.
+        horizon: Number of future steps.
+        data_completion: Missing data handling mode.
+        aggregation: Duplicate handling mode.
 
     Returns:
-        Dictionary containing:
-        - 'seasonality': Detected seasonal period
-        - 'timeline': Full timeline (historical + forecast)
-        - 'actual': Actual values (NaN for forecast periods)
-        - 'fitted': Fitted/forecasted values
-        - 'type': 'historical' or 'forecast' for each row
-        - 'trend': Detected trend value
+        Dictionary with model metadata and full output table fields.
     """
     try:
         values = np.array(values, dtype=float)
@@ -946,11 +1043,13 @@ def forecast_ets_seasonality_table_simple(
     aggregation: int = Aggregation.AVERAGE
 ) -> List[float]:
     """
-    Simplified version that returns only the fitted/forecasted values as a list.
-    This is the format expected by the SSE TENSOR function.
+    Return only fitted+forecasted values list.
+
+    This compact wrapper is used by SSE tensor output where only one numeric
+    column is required.
 
     Returns:
-        List of fitted values (for historical) + forecasted values (for horizon)
+        List of fitted historical values followed by forecast horizon values.
     """
     result = forecast_ets_seasonality_table(
         values, timeline, horizon, data_completion, aggregation
