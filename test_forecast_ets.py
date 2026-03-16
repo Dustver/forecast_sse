@@ -2,7 +2,7 @@ import numpy as np
 import sys
 sys.path.insert(0, '.')
 
-from ets import forecast_ets_seasonality, DataCompletion, Aggregation, _detect_seasonality_autocorrelation
+from ets import forecast_ets_seasonality, Aggregation
 
 # ============================================
 # Тестовые данные с известной сезонностью
@@ -109,7 +109,7 @@ for name, test in test_cases.items():
     result = forecast_ets_seasonality(
         values=values.tolist(),
         timeline=list(range(len(values))),
-        data_completion=DataCompletion.INTERPOLATE,
+        fill_missing=True,
         aggregation=Aggregation.AVERAGE
     )
     
