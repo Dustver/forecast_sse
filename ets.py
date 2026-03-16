@@ -51,7 +51,11 @@ def _parse_timestamp(ts) -> _dt.date:
         dt = np.datetime_as_string(ts, unit="D")
         return _dt.date.fromisoformat(dt).replace(day=1)
     if isinstance(ts, str):
-        return _dt.date.fromisoformat(ts[:10]).replace(day=1)
+        # Prefer ISO formats (e.g., 2024-01-31) first, then fallback to dd.mm.yyyy.
+        try:
+            return _dt.date.fromisoformat(ts[:10]).replace(day=1)
+        except ValueError:
+            return _dt.datetime.strptime(ts[:10], "%d.%m.%Y").date().replace(day=1)
     if isinstance(ts, (int, float)):
         # Heuristic: Excel serial date vs yyyymm integer.
         if ts > 200000:  # treat as yyyymm (e.g., 202401)

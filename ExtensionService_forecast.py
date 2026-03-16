@@ -70,8 +70,12 @@ class ExtensionService(SSE.ConnectorServicer):
 
                 values.append(duals[0].numData)
 
-                if num_params > 1 and duals[1].numData is not None:
-                    timeline.append(duals[1].numData)
+                if num_params > 1:
+                    # Prefer numeric (date/timestamp dual) and fallback to string like dd.mm.yyyy
+                    if duals[1].numData is not None:
+                        timeline.append(duals[1].numData)
+                    elif duals[1].strData:
+                        timeline.append(duals[1].strData)
 
                 if num_params > 2 and duals[2].numData is not None:
                     fill_missing = bool(int(duals[2].numData))
