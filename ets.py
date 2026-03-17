@@ -148,9 +148,14 @@ def _build_monthly_series(
     return series.to_numpy(dtype=float)
 
 
-def _autocorr_best_lag(series: np.ndarray) -> int:
+def _autocorr_best_lag(series: np.ndarray, min_nonzero: int = 4, min_corr: float = 0.3) -> int:
     n = len(series)
     if n < 3:
+        return 1
+
+    # Guard against extremely sparse series.
+    nonzero_count = int(np.count_nonzero(series))
+    if nonzero_count < min_nonzero:
         return 1
 
     # Detrend to mimic Excel's internal handling.
@@ -175,7 +180,9 @@ def _autocorr_best_lag(series: np.ndarray) -> int:
         return 1
 
     best_lag, best_corr = max(acf_pairs, key=lambda p: p[1])
-    return best_lag if best_corr > 0 else 1
+    if best_corr <= 0 or best_corr < min_corr:
+        return 1
+    return best_lag
 
 
 def forecast_ets_seasonality(
